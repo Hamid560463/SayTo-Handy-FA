@@ -1,0 +1,6 @@
+{
+  "name": "SayTo Handy — تایپ صوتی هوشمند فارسی (Vosk FA 0.42)",
+  "description": "اپلیکیشن ویندوزی و تحت‌وب تایپ صوتی آفلاین فارسی مشابه Handy و SayTo با پشتیبانی از مدل vosk-model-small-fa-0.42، نرمال‌ساز هوشمند، علائم نگارشی خودکار و کدهای کامل پایتون",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
