@@ -1136,27 +1136,59 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Step-by-Step Windows Installation Instructions in Persian */}
-              <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs leading-relaxed space-y-2">
-                <div className="font-bold text-slate-900 dark:text-white">
-                  راهنمای سریع نصب و اجرا در ویندوز (۳ مرحله):
+              {/* Step-by-Step Windows EXE Builder & One-Click Generator */}
+              <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs leading-relaxed space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-slate-900 dark:text-white">
+                      🚀 ساخت و دریافت نسخه نصبی ویندوز (<span className="font-mono">SayToHandy.exe</span>) با دانلودر داخلی مدل
+                    </div>
+                    <p className="text-slate-500 dark:text-slate-400 mt-1">
+                      برنامه <code className="font-mono text-sky-600 dark:text-sky-400">sayto_handy_gui_app.py</code> دارای پنجره گرافیکی ویندوز و **دکمه دانلود خودکار مدل با نوار پیشرفت (Progress Bar)** است. وقتی به <code className="font-mono">.exe</code> تبدیل شود، کاربر نهایی بدون نیاز به پایتون، فقط برنامه را باز کرده، دکمه «دانلود مدل (۴۷ مگابایت)» را می‌زند و بلافاصله کار را شروع می‌کند.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const guiApp = PYTHON_PROJECT_FILES.find((f) => f.id === 'windows-gui-exe-app')?.code || '';
+                      const buildBat = PYTHON_PROJECT_FILES.find((f) => f.id === 'build-exe-bat')?.code || '';
+                      // اسکریپت خودکار که با یک کلیک در ویندوز هم فایل پایتون را می‌سازد و هم به EXE تبدیل می‌کند
+                      const allInOneInstallerCmd = `@echo off
+chcp 65001 > nul
+title SayToHandy EXE Auto-Builder
+echo در حال آماده‌سازی فایل‌های سورس و کامپایل به SayToHandy.exe ...
+
+python -c "import pathlib; pathlib.Path('sayto_handy_gui_app.py').write_text(${JSON.stringify(guiApp)}, encoding='utf-8')"
+
+${buildBat}`;
+                      handleDownloadPythonFile('Make_SayToHandy_EXE.bat', allInOneInstallerCmd);
+                    }}
+                    className="px-4 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>دانلود سازنده تک‌کلیکی فایل EXE (Make_SayToHandy_EXE.bat)</span>
+                  </button>
                 </div>
-                <ol className="list-decimal list-inside space-y-1 text-slate-600 dark:text-slate-300">
-                  <li>
-                    پکیج‌های مورد نیاز را نصب کنید:{' '}
-                    <code className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-sky-300 font-mono" dir="ltr">
-                      pip install vosk sounddevice keyboard pyperclip fastapi uvicorn streamlit pandas openpyxl
-                    </code>
-                  </li>
-                  <li>
-                    فایل <code className="font-mono">setup_model.py</code> را اجرا کنید تا مدل{' '}
-                    <code className="font-mono">vosk-model-small-fa-0.42</code> (۴۷ مگابایت) به صورت خودکار دانلود و در پوشه <code className="font-mono">models/</code> استخراج شود.
-                  </li>
-                  <li>
-                    فایل <code className="font-mono">handy_sayto_agent.py</code> را اجرا کنید و در هر نرم‌افزار ویندوزی کلید{' '}
-                    <code className="font-mono">Ctrl+Shift+Space</code> را فشار دهید تا صدای شما با نیم‌فاصله و علائم نگارشی تایپ شود.
-                  </li>
-                </ol>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+                  <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
+                    <div className="font-bold text-slate-900 dark:text-white mb-1">
+                      گام ۱: ساخت فایل SayToHandy.exe
+                    </div>
+                    فایل <code className="font-mono text-emerald-600 dark:text-emerald-400">Make_SayToHandy_EXE.bat</code> را از دکمه سبز بالا دانلود و اجرا کنید تا فایل مستقل <code className="font-mono">dist\SayToHandy.exe</code> به صورت خودکار ساخته شود.
+                  </div>
+                  <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
+                    <div className="font-bold text-slate-900 dark:text-white mb-1">
+                      گام ۲: نصب روی هر ویندوزی
+                    </div>
+                    فایل <code className="font-mono">SayToHandy.exe</code> را به هر کامپیوتر دیگری بدهید؛ کاربر بدون نیاز به نصب پایتون یا هیچ پیش‌نیازی آن را باز می‌کند.
+                  </div>
+                  <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
+                    <div className="font-bold text-slate-900 dark:text-white mb-1">
+                      گام ۳: دانلود مدل در داخل برنامه
+                    </div>
+                    داخل پنجره برنامه، کاربر فقط یک‌بار روی دکمه **«دانلود و نصب خودکار مدل فارسی (۴۷ مگابایت)»** کلیک می‌کند و بلافاصله کلید <code className="font-mono">Ctrl+Shift+Space</code> فعال می‌شود.
+                  </div>
+                </div>
               </div>
 
               {/* File Selector Tabs */}
