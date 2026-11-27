@@ -22,20 +22,17 @@ export const PYTHON_PROJECT_FILES: CodeFileTemplate[] = [
   {
     id: 'windows-gui-exe-app',
     filename: 'sayto_handy_gui_app.py',
-    title: 'برنامه اصلی گرافیکی ویندوز (مخصوص تبدیل به SayToHandy.exe)',
-    badge: 'Standalone GUI App (.EXE)',
+    title: 'برنامه اصلی گرافیکی ویندوز با ظاهر مدرن Handy (CustomTkinter + Floating Pill Overlay)',
+    badge: 'Modern Handy UI (.EXE)',
     description:
-      'اپلیکیشن دسکتاپ کامل با رابط گرافیکی ویندوز (Tkinter RTL) بدون نیاز به کنسول: وقتی کاربر فایل EXE را باز می‌کند، اگر مدل vosk-model-small-fa-0.42 نصب نباشد دکمه «دانلود خودکار مدل (۴۷ مگابایت)» با نوار پیشرفت نمایش داده می‌شود و بلافاصله کلید میانبر Ctrl+Shift+Space در کل ویندوز فعال می‌گردد.',
+      'رابط گرافیکی کاملاً مدرن ویندوز ۱۱ با CustomTkinter دقیقاً مشابه نرم‌افزار Handy: شامل نوار کناری (Sidebar)، کارت‌های لبه‌گرد (Rounded Cards)، کلیدهای سوییچ مدرن (Pill Switches)، انتخابگر میکروفون، مدیریت مدل‌ها و «کپسول شناور ضبط صدا» (Floating Recording Pill Overlay) در پایین صفحه ویندوز با اکولایزر زنده.',
     code: `#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SayTo-Handy Standalone Windows Desktop Application (.EXE Ready)
+SayTo-Handy Modern Windows Desktop Application (.EXE Ready)
+UI Framework: CustomTkinter (Modern Dark UI + Floating Recording Overlay Pill)
 Engine: vosk-model-small-fa-0.42
-Features:
-- Built-in One-Click Model Downloader with Progress Bar (saves to %LOCALAPPDATA%\\SayToHandy)
-- Global Hotkey (Ctrl+Shift+Space) across all Windows apps (Word, Telegram, Browser, Notepad)
-- SayTo Persian Post-Processing (Voice punctuation + Half-space ZWNJ + Persian numerals)
-- SQLite History & Excel Export (.xlsx)
+Inspired directly by Handy (cjpais/Handy) & SayTo
 """
 
 import os
@@ -43,24 +40,63 @@ import sys
 import json
 import time
 import queue
+import ctypes
 import zipfile
 import sqlite3
+import traceback
 import threading
 import urllib.request
 import re
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import messagebox, filedialog
 
-import sounddevice as sd
-from vosk import Model, KaldiRecognizer
-import keyboard
-import pyperclip
+# ==============================================================================
+# 1. PyInstaller _MEIPASS DLL Resolver & DPI Awareness for Crisp Windows 11 Font
+# ==============================================================================
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
-# مسیر استاندارد ذخیره‌سازی داده‌ها در ویندوز تا فایل EXE در هر پوشه‌ای بدون خطای دسترسی کار کند
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    base_meipass = Path(sys._MEIPASS)
+    candidate_dll_dirs = [
+        base_meipass,
+        base_meipass / "vosk",
+        base_meipass / "_sounddevice_data" / "portaudio-binaries",
+    ]
+    for dll_dir in candidate_dll_dirs:
+        if dll_dir.exists():
+            os.environ["PATH"] = str(dll_dir) + os.pathsep + os.environ.get("PATH", "")
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(str(dll_dir))
+                except Exception:
+                    pass
+
+if getattr(sys, "frozen", False) and sys.platform == "win32":
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
+
+import customtkinter as ctk
+
+# تنظیم تم تاریک مدرن مشابه Handy
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "SayToHandy"
 APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = APP_DATA_DIR / "sayto_error.log"
 
 MODEL_NAME = "vosk-model-small-fa-0.42"
 MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_NAME}.zip"
@@ -100,7 +136,6 @@ class PersianTextProcessor:
     def normalize(cls, raw_text: str, use_punctuation=True, use_halfspace=True) -> str:
         if not raw_text or not raw_text.strip():
             return ""
-
         text = raw_text.strip()
         text = text.replace("ي", "ی").replace("ى", "ی").replace("ك", "ک")
 
@@ -110,9 +145,7 @@ class PersianTextProcessor:
                 text = re.sub(pattern, replacement, text)
 
         if use_halfspace:
-            # پیشوند افعال می و نمی
             text = re.sub(r"(^|\\s)(ن?می)\\s+([آ-ی]{2,})", r"\\1\\2‌\\3", text)
-            # پسوندهای جمع و صفت برتر
             text = re.sub(r"([آ-ی]{2,})\\s+(های|هایی|ها|ترین|تر)(?=\\s|$|[،.؟!:؛])", r"\\1‌\\2", text)
 
         text = re.sub(r"\\s+([،.؟!:؛.])", r"\\1", text)
@@ -121,14 +154,131 @@ class PersianTextProcessor:
         return text.strip()
 
 
-class SayToHandyWindowsApp:
-    """رابط گرافیکی اصلی نسخه EXE ویندوز"""
+class HandyFloatingOverlay(ctk.CTkToplevel):
+    """
+    کپسول شناور ضبط صدا (Handy Floating Overlay Bar)
+    این پنجره کوچک بدون کادر در پایین صفحه ویندوز (Always on Top) ظاهر می‌شود
+    و هنگام فشردن Ctrl+Shift+Space موج صدای زنده و متن در حال تشخیص را نشان می‌دهد.
+    """
 
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("SayTo Handy FA — دستیار تایپ صوتی آفلاین ویندوز")
-        self.root.geometry("760x620")
-        self.root.configure(bg="#0f172a")
+    def __init__(self, master, on_toggle_callback):
+        super().__init__(master)
+        self.on_toggle_callback = on_toggle_callback
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(fg_color="#090d16")
+
+        # قرارگیری در پایین-مرکز صفحه نمایش ویندوز (دقیقاً مشابه Handy)
+        pill_w, pill_h = 380, 56
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        pos_x = (screen_w - pill_w) // 2
+        pos_y = screen_h - 125
+        self.geometry(f"{pill_w}x{pill_h}+{pos_x}+{pos_y}")
+
+        self.container = ctk.CTkFrame(
+            self,
+            fg_color="#111827",
+            corner_radius=26,
+            border_width=1,
+            border_color="#334155"
+        )
+        self.container.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # دکمه دایره‌ای میکروفون / توقف
+        self.mic_btn = ctk.CTkButton(
+            self.container,
+            text="🎙️",
+            width=38,
+            height=38,
+            corner_radius=19,
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            font=("Segoe UI Emoji", 14),
+            command=self.on_toggle_callback
+        )
+        self.mic_btn.pack(side="left", padx=(10, 8), pady=8)
+
+        # بوم اکولایزر صوتی زنده
+        self.wave_canvas = tk.Canvas(
+            self.container,
+            width=120,
+            height=28,
+            bg="#111827",
+            highlightthickness=0
+        )
+        self.wave_canvas.pack(side="left", padx=4)
+        self.bars = []
+        for i in range(16):
+            x0 = i * 7 + 4
+            bar = self.wave_canvas.create_rectangle(x0, 10, x0 + 4, 18, fill="#38bdf8", outline="")
+            self.bars.append(bar)
+
+        # وضعیت متن زنده داخل کپسول
+        self.status_lbl = ctk.CTkLabel(
+            self.container,
+            text="آماده (Ctrl+Shift+Space)",
+            font=("Segoe UI", 12, "bold"),
+            text_color="#e2e8f0"
+        )
+        self.status_lbl.pack(side="right", padx=(6, 14))
+
+        # قابلیت جابجایی کپسول با کشیدن ماوس
+        self.container.bind("<ButtonPress-1>", self._start_move)
+        self.container.bind("<B1-Motion>", self._on_move)
+        self._drag_x = 0
+        self._drag_y = 0
+
+    def _start_move(self, event):
+        self._drag_x = event.x
+        self._drag_y = event.y
+
+    def _on_move(self, event):
+        x = self.winfo_x() + event.x - self._drag_x
+        y = self.winfo_y() + event.y - self._drag_y
+        self.geometry(f"+{x}+{y}")
+
+    def set_recording_state(self, is_rec: bool, text_preview: str = ""):
+        if is_rec:
+            self.container.configure(border_color="#ef4444")
+            self.mic_btn.configure(fg_color="#dc2626", hover_color="#b91c1c", text="⏹")
+            display_txt = text_preview[-22:] if text_preview else "در حال شنیدن..."
+            self.status_lbl.configure(text=display_txt, text_color="#fca5a5")
+        else:
+            self.container.configure(border_color="#334155")
+            self.mic_btn.configure(fg_color="#2563eb", hover_color="#1d4ed8", text="🎙️")
+            self.status_lbl.configure(text="آماده (Ctrl+Shift+Space)", text_color="#e2e8f0")
+            self.update_waveform([4] * 16, active=False)
+
+    def update_waveform(self, levels, active=True):
+        color = "#38bdf8" if active else "#475569"
+        for i, bar in enumerate(self.bars):
+            val = levels[i % len(levels)]
+            half = max(2, min(13, int(val)))
+            x0 = i * 7 + 4
+            self.wave_canvas.coords(bar, x0, 14 - half, x0 + 4, 14 + half)
+            self.wave_canvas.itemconfig(bar, fill=color)
+
+
+class SayToHandyModernApp(ctk.CTk):
+    """پنجره اصلی تنظیمات و میز کار با طراحی مدرن Handy"""
+
+    def __init__(self):
+        super().__init__()
+        self.title("Handy SayTo — Persian Offline Voice Typing")
+        self.geometry("940x640")
+        self.minsize(860, 580)
+        self.configure(fg_color="#090d16")
+
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(500, lambda: self.attributes("-topmost", False))
+
+        # ماژول‌های صوتی
+        self.sd = None
+        self.vosk_module = None
+        self.keyboard_module = None
+        self.pyperclip_module = None
 
         self.model = None
         self.recognizer = None
@@ -138,15 +288,21 @@ class SayToHandyWindowsApp:
         self.start_time = 0.0
         self.session_segments: list[str] = []
 
-        self.use_punctuation_var = tk.BooleanVar(value=True)
-        self.use_halfspace_var = tk.BooleanVar(value=True)
-        self.auto_paste_var = tk.BooleanVar(value=True)
-        self.status_var = tk.StringVar(value="در حال بررسی وضعیت مدل آفلاین فارسی...")
-        self.progress_var = tk.DoubleVar(value=0.0)
+        # متغیرهای تنظیمات مدرن
+        self.auto_paste_var = ctk.BooleanVar(value=True)
+        self.use_halfspace_var = ctk.BooleanVar(value=True)
+        self.use_punctuation_var = ctk.BooleanVar(value=True)
+        self.show_overlay_var = ctk.BooleanVar(value=True)
+        self.status_var = ctk.StringVar(value="در حال راه‌اندازی هسته صوتی...")
+        self.hotkey_var = ctk.StringVar(value="ctrl+shift+space")
 
         self._init_db()
-        self._build_ui()
-        self._check_model_on_startup()
+        self._build_layout()
+
+        # ایجاد کپسول شناور Handy در پایین صفحه ویندوز
+        self.overlay = HandyFloatingOverlay(self, self.toggle_recording)
+
+        self.after(200, self._initialize_libraries_and_model)
 
     def _init_db(self):
         with sqlite3.connect(DB_PATH) as conn:
@@ -162,231 +318,474 @@ class SayToHandyWindowsApp:
             """)
             conn.commit()
 
-    def _build_ui(self):
-        # هدر برنامه
-        header = tk.Frame(self.root, bg="#1e293b", padx=20, pady=15)
-        header.pack(fill="x")
+    def _build_layout(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=0)
+        self.grid_rowconfigure(0, weight=1)
 
-        title_lbl = tk.Label(
-            header,
-            text="🎙️ SayTo Handy FA — تایپ صوتی آفلاین ویندوز",
-            font=("Tahoma", 14, "bold"),
-            fg="#f8fafc",
-            bg="#1e293b"
+        # ۱. نوار کناری سمت راست (Sidebar مشابه Handy)
+        self.sidebar = ctk.CTkFrame(
+            self,
+            width=220,
+            corner_radius=0,
+            fg_color="#111827",
+            border_width=1,
+            border_color="#1e293b"
         )
-        title_lbl.pack(side="right")
+        self.sidebar.grid(row=0, column=1, sticky="nsew")
+        self.sidebar.grid_propagate(False)
 
-        hotkey_lbl = tk.Label(
-            header,
-            text="میانبر سراسری: Ctrl + Shift + Space",
-            font=("Consolas", 10, "bold"),
-            fg="#38bdf8",
-            bg="#1e293b"
+        brand_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        brand_frame.pack(fill="x", padx=20, pady=(24, 20))
+
+        ctk.CTkLabel(
+            brand_frame,
+            text="🎙️ Handy SayTo",
+            font=("Segoe UI", 20, "bold"),
+            text_color="#f8fafc"
+        ).pack(anchor="e")
+
+        ctk.CTkLabel(
+            brand_frame,
+            text="تایپ صوتی آفلاین ویندوز",
+            font=("Segoe UI", 12),
+            text_color="#64748b"
+        ).pack(anchor="e")
+
+        # دکمه‌های ناوبری Sidebar
+        self.nav_buttons = {}
+        nav_items = [
+            ("home", "🏠  میز کار و تایپ زنده"),
+            ("models", "🧠  مدل صوتی و میکروفون"),
+            ("history", "📜  تاریخچه و خروجی اکسل"),
+        ]
+        for key, label in nav_items:
+            btn = ctk.CTkButton(
+                self.sidebar,
+                text=label,
+                anchor="e",
+                height=42,
+                corner_radius=10,
+                font=("Segoe UI", 13, "bold"),
+                fg_color="transparent",
+                text_color="#cbd5e1",
+                hover_color="#1e293b",
+                command=lambda k=key: self.switch_page(k)
+            )
+            btn.pack(fill="x", padx=14, pady=4)
+            self.nav_buttons[key] = btn
+
+        # کارت راهنمای کلید میانبر در پایین سایدبار
+        shortcut_card = ctk.CTkFrame(
+            self.sidebar,
+            fg_color="#1e293b",
+            corner_radius=12,
+            border_width=1,
+            border_color="#334155"
         )
-        hotkey_lbl.pack(side="left")
+        shortcut_card.pack(side="bottom", fill="x", padx=14, pady=18)
 
-        # کادر وضعیت مدل و دانلود خودکار (مخصوص شروع کار کاربر)
-        self.model_frame = tk.Frame(self.root, bg="#0f172a", padx=20, pady=12)
-        self.model_frame.pack(fill="x")
+        ctk.CTkLabel(
+            shortcut_card,
+            text="کلید میانبر سراسری ویندوز",
+            font=("Segoe UI", 11),
+            text_color="#94a3b8"
+        ).pack(pady=(10, 2))
 
-        self.status_label = tk.Label(
-            self.model_frame,
-            textvariable=self.status_var,
-            font=("Tahoma", 10),
-            fg="#e2e8f0",
-            bg="#0f172a",
-            justify="right"
+        ctk.CTkLabel(
+            shortcut_card,
+            text="Ctrl + Shift + Space",
+            font=("Consolas", 13, "bold"),
+            text_color="#38bdf8"
+        ).pack(pady=(0, 10))
+
+        # ۲. بخش محتوای اصلی (سمت چپ)
+        self.main_area = ctk.CTkFrame(self, fg_color="#090d16", corner_radius=0)
+        self.main_area.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
+        self.main_area.grid_columnconfigure(0, weight=1)
+        self.main_area.grid_rowconfigure(1, weight=1)
+
+        # نوار وضعیت بالای صفحه + دکمه اصلی ضبط
+        top_card = ctk.CTkFrame(
+            self.main_area,
+            fg_color="#111827",
+            corner_radius=14,
+            border_width=1,
+            border_color="#1e293b"
         )
-        self.status_label.pack(anchor="e", pady=(0, 8))
+        top_card.grid(row=0, column=0, sticky="ew", pady=(0, 16))
 
-        self.progress_bar = ttk.Progressbar(
-            self.model_frame,
-            variable=self.progress_var,
-            maximum=100
-        )
-        self.progress_bar.pack(fill="x", pady=(0, 8))
-
-        btn_row = tk.Frame(self.model_frame, bg="#0f172a")
-        btn_row.pack(fill="x")
-
-        self.download_btn = tk.Button(
-            btn_row,
-            text="📥 دانلود و نصب خودکار مدل فارسی (۴۷ مگابایت)",
-            font=("Tahoma", 10, "bold"),
-            bg="#0284c7",
-            fg="white",
-            padx=14,
-            pady=6,
-            relief="flat",
-            command=self.start_model_download_thread
-        )
-        self.download_btn.pack(side="right", padx=(0, 10))
-
-        self.record_btn = tk.Button(
-            btn_row,
-            text="🎙️ شروع تایپ صوتی (Ctrl+Shift+Space)",
-            font=("Tahoma", 10, "bold"),
-            bg="#16a34a",
-            fg="white",
-            padx=16,
-            pady=6,
-            relief="flat",
+        self.record_btn = ctk.CTkButton(
+            top_card,
+            text="🎙️ شروع تایپ صوتی",
+            font=("Segoe UI", 13, "bold"),
+            height=40,
+            width=180,
+            corner_radius=10,
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
             state="disabled",
             command=self.toggle_recording
         )
-        self.record_btn.pack(side="right")
+        self.record_btn.pack(side="left", padx=16, pady=14)
 
-        # تنظیمات هوشمند SayTo
-        opts_frame = tk.Frame(self.root, bg="#1e293b", padx=20, pady=10)
-        opts_frame.pack(fill="x", padx=20, pady=6)
+        self.status_lbl = ctk.CTkLabel(
+            top_card,
+            textvariable=self.status_var,
+            font=("Segoe UI", 13),
+            text_color="#e2e8f0"
+        )
+        self.status_lbl.pack(side="right", padx=18, pady=14)
 
-        tk.Checkbutton(
-            opts_frame,
-            text="تزریق خودکار در پنجره فعال ویندوز (Auto-Paste)",
+        # صفحات داخلی
+        self.pages = {}
+        self._build_home_page()
+        self._build_models_page()
+        self._build_history_page()
+
+        self.switch_page("home")
+
+    def _build_home_page(self):
+        page = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.pages["home"] = page
+
+        # بنر دانلود مدل (فقط در صورتی که مدل هنوز دانلود نشده باشد بالا می‌آید)
+        self.download_card = ctk.CTkFrame(
+            page,
+            fg_color="#172554",
+            corner_radius=14,
+            border_width=1,
+            border_color="#1d4ed8"
+        )
+        self.download_card.pack(fill="x", pady=(0, 16))
+
+        dl_top = ctk.CTkFrame(self.download_card, fg_color="transparent")
+        dl_top.pack(fill="x", padx=18, pady=(14, 8))
+
+        self.download_btn = ctk.CTkButton(
+            dl_top,
+            text="📥 دانلود خودکار مدل فارسی (۴۷ مگابایت)",
+            font=("Segoe UI", 13, "bold"),
+            height=38,
+            corner_radius=10,
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            command=self.start_model_download_thread
+        )
+        self.download_btn.pack(side="left")
+
+        ctk.CTkLabel(
+            dl_top,
+            text="مدل آفلاین vosk-model-small-fa-0.42",
+            font=("Segoe UI", 14, "bold"),
+            text_color="#f8fafc"
+        ).pack(side="right")
+
+        self.progress_bar = ctk.CTkProgressBar(
+            self.download_card,
+            height=8,
+            corner_radius=4,
+            progress_color="#38bdf8"
+        )
+        self.progress_bar.set(0)
+        self.progress_bar.pack(fill="x", padx=18, pady=(4, 14))
+
+        # کارت کلیدهای سوییچ مدرن (Handy Pill Switches)
+        switches_card = ctk.CTkFrame(
+            page,
+            fg_color="#111827",
+            corner_radius=14,
+            border_width=1,
+            border_color="#1e293b"
+        )
+        switches_card.pack(fill="x", pady=(0, 16))
+
+        sw_inner = ctk.CTkFrame(switches_card, fg_color="transparent")
+        sw_inner.pack(fill="x", padx=18, pady=14)
+
+        ctk.CTkSwitch(
+            sw_inner,
+            text="تایپ خودکار در پنجره فعال (Auto-Paste)",
             variable=self.auto_paste_var,
-            font=("Tahoma", 9),
-            fg="#f8fafc",
-            bg="#1e293b",
-            selectcolor="#0f172a",
-            activebackground="#1e293b"
-        ).pack(side="right", padx=10)
+            font=("Segoe UI", 12),
+            progress_color="#2563eb"
+        ).pack(side="right", padx=(12, 0))
 
-        tk.Checkbutton(
-            opts_frame,
-            text="اصلاح نیم‌فاصله‌ها (می‌روم، کتاب‌ها)",
+        ctk.CTkSwitch(
+            sw_inner,
+            text="اصلاح نیم‌فاصله (می‌روم)",
             variable=self.use_halfspace_var,
-            font=("Tahoma", 9),
-            fg="#f8fafc",
-            bg="#1e293b",
-            selectcolor="#0f172a",
-            activebackground="#1e293b"
-        ).pack(side="right", padx=10)
+            font=("Segoe UI", 12),
+            progress_color="#2563eb"
+        ).pack(side="right", padx=16)
 
-        tk.Checkbutton(
-            opts_frame,
-            text="فرمان‌های صوتی نگارشی (ویرگول، نقطه، سر خط)",
+        ctk.CTkSwitch(
+            sw_inner,
+            text="علائم نگارشی صوتی (ویرگول، نقطه)",
             variable=self.use_punctuation_var,
-            font=("Tahoma", 9),
-            fg="#f8fafc",
-            bg="#1e293b",
-            selectcolor="#0f172a",
-            activebackground="#1e293b"
-        ).pack(side="right", padx=10)
+            font=("Segoe UI", 12),
+            progress_color="#2563eb"
+        ).pack(side="right", padx=16)
 
-        # جعبه متن خروجی زنده
-        editor_frame = tk.Frame(self.root, bg="#0f172a", padx=20, pady=10)
-        editor_frame.pack(fill="both", expand=True)
+        ctk.CTkSwitch(
+            sw_inner,
+            text="کپسول شناور",
+            variable=self.show_overlay_var,
+            font=("Segoe UI", 12),
+            progress_color="#2563eb",
+            command=self._toggle_overlay_visibility
+        ).pack(side="left")
 
-        tk.Label(
-            editor_frame,
-            text="متن فارسی تشخیص داده شده (همگام با کلیپ‌بورد و پنجره فعال ویندوز):",
-            font=("Tahoma", 10, "bold"),
-            fg="#94a3b8",
-            bg="#0f172a"
-        ).pack(anchor="e", pady=(0, 6))
+        # کارت ویرایشگر زنده متن فارسی
+        editor_card = ctk.CTkFrame(
+            page,
+            fg_color="#111827",
+            corner_radius=14,
+            border_width=1,
+            border_color="#1e293b"
+        )
+        editor_card.pack(fill="both", expand=True)
 
-        self.text_box = tk.Text(
-            editor_frame,
-            font=("Tahoma", 12),
-            bg="#1e293b",
-            fg="#f8fafc",
-            insertbackground="white",
-            relief="flat",
-            padx=12,
-            pady=12,
+        ed_header = ctk.CTkFrame(editor_card, fg_color="transparent")
+        ed_header.pack(fill="x", padx=18, pady=(14, 6))
+
+        ctk.CTkLabel(
+            ed_header,
+            text="متن فارسی تشخیص داده‌شده (آماده تزریق در Word، تلگرام، مرورگر و...)",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#94a3b8"
+        ).pack(side="right")
+
+        btn_box = ctk.CTkFrame(ed_header, fg_color="transparent")
+        btn_box.pack(side="left")
+
+        ctk.CTkButton(
+            btn_box,
+            text="کپی متن",
+            width=85,
+            height=30,
+            corner_radius=8,
+            fg_color="#1e293b",
+            hover_color="#334155",
+            font=("Segoe UI", 12),
+            command=self.copy_all_text
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            btn_box,
+            text="پاک کردن",
+            width=85,
+            height=30,
+            corner_radius=8,
+            fg_color="#1e293b",
+            hover_color="#334155",
+            font=("Segoe UI", 12),
+            command=lambda: self.text_box.delete("1.0", "end")
+        ).pack(side="left")
+
+        self.text_box = ctk.CTkTextbox(
+            editor_card,
+            font=("Segoe UI", 15),
+            fg_color="#0b1120",
+            text_color="#f8fafc",
+            corner_radius=10,
+            border_width=1,
+            border_color="#1e293b",
             wrap="word"
         )
-        self.text_box.pack(fill="both", expand=True)
+        self.text_box.pack(fill="both", expand=True, padx=18, pady=(4, 18))
 
-        # نوار ابزار پایین
-        footer = tk.Frame(self.root, bg="#0f172a", padx=20, pady=12)
-        footer.pack(fill="x")
+        # راست‌چین کردن کامل متن داخل Textbox در ویندوز
+        try:
+            self.text_box._textbox.tag_configure("rtl", justify="right")
+            self.text_box._textbox.tag_add("rtl", "1.0", "end")
+        except Exception:
+            pass
 
-        tk.Button(
-            footer,
-            text="📋 کپی متن",
-            font=("Tahoma", 9),
-            bg="#334155",
-            fg="white",
-            padx=12,
-            pady=5,
-            relief="flat",
-            command=self.copy_all_text
-        ).pack(side="right", padx=(0, 8))
+    def _build_models_page(self):
+        page = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.pages["models"] = page
 
-        tk.Button(
-            footer,
-            text="🗑️ پاک کردن صفحه",
-            font=("Tahoma", 9),
-            bg="#334155",
-            fg="white",
-            padx=12,
-            pady=5,
-            relief="flat",
-            command=lambda: self.text_box.delete("1.0", tk.END)
-        ).pack(side="right", padx=(0, 8))
+        card = ctk.CTkFrame(
+            page,
+            fg_color="#111827",
+            corner_radius=14,
+            border_width=1,
+            border_color="#1e293b"
+        )
+        card.pack(fill="x", pady=(0, 16), padx=4)
 
-        tk.Button(
-            footer,
-            text="📊 خروجی اکسل تاریخچه (.CSV)",
-            font=("Tahoma", 9),
-            bg="#059669",
-            fg="white",
-            padx=12,
-            pady=5,
-            relief="flat",
+        ctk.CTkLabel(
+            card,
+            text="مدیریت مدل آفلاین و تنظیمات میکروفون",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#f8fafc"
+        ).pack(anchor="e", padx=20, pady=(18, 8))
+
+        ctk.CTkLabel(
+            card,
+            text=f"مسیر ذخیره‌سازی مدل در ویندوز:  {MODEL_DIR}",
+            font=("Consolas", 11),
+            text_color="#38bdf8"
+        ).pack(anchor="e", padx=20, pady=(0, 14))
+
+        mic_row = ctk.CTkFrame(card, fg_color="transparent")
+        mic_row.pack(fill="x", padx=20, pady=(0, 20))
+
+        ctk.CTkLabel(
+            mic_row,
+            text="دستگاه ورودی صدا (میکروفون):",
+            font=("Segoe UI", 13),
+            text_color="#cbd5e1"
+        ).pack(side="right", padx=(12, 0))
+
+        self.mic_combo = ctk.CTkComboBox(
+            mic_row,
+            values=["پیش‌فرض ویندوز (Default Microphone)"],
+            width=340,
+            font=("Segoe UI", 12)
+        )
+        self.mic_combo.pack(side="right")
+
+    def _build_history_page(self):
+        page = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.pages["history"] = page
+
+        top_bar = ctk.CTkFrame(page, fg_color="transparent")
+        top_bar.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(
+            top_bar,
+            text="تاریخچه تایپ‌های صوتی اخیر (SQLite)",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#f8fafc"
+        ).pack(side="right")
+
+        ctk.CTkButton(
+            top_bar,
+            text="📊 خروجی اکسل (.CSV)",
+            height=34,
+            corner_radius=8,
+            fg_color="#059669",
+            hover_color="#047857",
+            font=("Segoe UI", 12, "bold"),
             command=self.export_history_csv
         ).pack(side="left")
 
-    def _check_model_on_startup(self):
-        """بررسی وجود مدل در لحظه باز شدن فایل EXE"""
+        self.history_box = ctk.CTkTextbox(
+            page,
+            font=("Segoe UI", 13),
+            fg_color="#111827",
+            text_color="#e2e8f0",
+            corner_radius=12,
+            border_width=1,
+            border_color="#1e293b"
+        )
+        self.history_box.pack(fill="both", expand=True)
+
+    def switch_page(self, page_key: str):
+        for k, p in self.pages.items():
+            p.grid_forget()
+        for k, btn in self.nav_buttons.items():
+            if k == page_key:
+                btn.configure(fg_color="#2563eb", text_color="#ffffff")
+            else:
+                btn.configure(fg_color="transparent", text_color="#cbd5e1")
+
+        self.pages[page_key].grid(row=1, column=0, sticky="nsew")
+        if page_key == "history":
+            self._refresh_history_view()
+
+    def _toggle_overlay_visibility(self):
+        if self.show_overlay_var.get():
+            self.overlay.deiconify()
+        else:
+            self.overlay.withdraw()
+
+    def _refresh_history_view(self):
+        self.history_box.delete("1.0", "end")
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT created_at, processed_text, word_count, duration_sec FROM transcriptions ORDER BY id DESC LIMIT 100"
+            ).fetchall()
+        if not rows:
+            self.history_box.insert("end", "هنوز هیچ تایپ صوتی ثبت نشده است.\\n")
+            return
+        for r in rows:
+            line = f"[{r[0]}]  ({r[2]} کلمه - {r[3]} ثانیه)\\n{r[1]}\\n{'-'*65}\\n"
+            self.history_box.insert("end", line)
+
+    def _initialize_libraries_and_model(self):
+        try:
+            import sounddevice as sd_mod
+            import vosk as vosk_mod
+            import keyboard as kb_mod
+            import pyperclip as clip_mod
+
+            self.sd = sd_mod
+            self.vosk_module = vosk_mod
+            self.keyboard_module = kb_mod
+            self.pyperclip_module = clip_mod
+
+            # پر کردن لیست میکروفون‌های واقعی ویندوز
+            try:
+                devices = self.sd.query_devices()
+                input_names = [f"{i}: {d['name']}" for i, d in enumerate(devices) if d.get("max_input_channels", 0) > 0]
+                if input_names:
+                    self.mic_combo.configure(values=input_names)
+                    self.mic_combo.set(input_names[0])
+            except Exception:
+                pass
+
+        except Exception as err:
+            LOG_FILE.write_text(traceback.format_exc(), encoding="utf-8")
+            self.status_var.set(f"❌ خطا در بارگذاری ماژول صوتی: {err}")
+            return
+
         if MODEL_DIR.exists():
-            self.progress_var.set(100)
-            self.download_btn.config(state="disabled", text="✅ مدل فارسی نصب است")
+            self.progress_bar.set(1.0)
+            self.download_btn.configure(state="disabled", text="✅ مدل فارسی نصب است", fg_color="#16a34a")
             threading.Thread(target=self._load_vosk_engine, daemon=True).start()
         else:
-            self.status_var.set(
-                "⚠️ مدل آفلاین فارسی هنوز دانلود نشده است. روی دکمه «دانلود و نصب خودکار مدل» کلیک کنید تا یک‌بار برای همیشه نصب شود."
-            )
+            self.status_var.set("⚠️ ابتدا روی دکمه آبی «دانلود خودکار مدل فارسی (۴۷ مگابایت)» کلیک کنید.")
 
     def start_model_download_thread(self):
-        self.download_btn.config(state="disabled")
+        self.download_btn.configure(state="disabled", text="⏳ در حال دانلود مدل...")
         threading.Thread(target=self._download_and_extract_model, daemon=True).start()
 
     def _download_and_extract_model(self):
         try:
             MODELS_ROOT.mkdir(parents=True, exist_ok=True)
-            self.status_var.set(f"🌐 در حال دانلود {MODEL_NAME} از سرور رسمی Vosk (حجم: ۴۷ مگابایت)...")
+            self.status_var.set(f"🌐 در حال دانلود {MODEL_NAME} (۴۷ مگابایت)...")
 
             def reporthook(count, block_size, total_size):
                 if total_size > 0:
-                    percent = min(100.0, (count * block_size * 100.0) / total_size)
-                    self.progress_var.set(percent)
-                    self.status_var.set(f"📥 در حال دانلود مدل فارسی: {percent:.1f}% تکمیل شد...")
+                    ratio = min(1.0, (count * block_size) / total_size)
+                    self.progress_bar.set(ratio)
+                    self.status_var.set(f"📥 دانلود مدل فارسی: {ratio*100:.1f}%")
 
             urllib.request.urlretrieve(MODEL_URL, ZIP_PATH, reporthook=reporthook)
-            self.status_var.set("📦 دانلود تمام شد! در حال استخراج فایل‌های مدل...")
+            self.status_var.set("📦 در حال استخراج فایل‌های مدل...")
 
             with zipfile.ZipFile(ZIP_PATH, "r") as zf:
                 zf.extractall(MODELS_ROOT)
 
             ZIP_PATH.unlink(missing_ok=True)
-            self.download_btn.config(text="✅ مدل فارسی نصب شد")
+            self.download_btn.configure(text="✅ مدل فارسی نصب شد", fg_color="#16a34a")
             self._load_vosk_engine()
         except Exception as err:
             self.status_var.set(f"❌ خطا در دانلود مدل: {err}")
-            self.download_btn.config(state="normal")
+            self.download_btn.configure(state="normal", text="📥 تلاش مجدد دانلود مدل")
 
     def _load_vosk_engine(self):
         try:
-            self.status_var.set("⏳ در حال بارگذاری موتور صوتی vosk-model-small-fa-0.42 در حافظه...")
-            self.model = Model(str(MODEL_DIR))
-            self.recognizer = KaldiRecognizer(self.model, SAMPLE_RATE)
+            self.status_var.set("⏳ در حال بارگذاری موتور صوتی vosk-model-small-fa-0.42...")
+            self.model = self.vosk_module.Model(str(MODEL_DIR))
+            self.recognizer = self.vosk_module.KaldiRecognizer(self.model, SAMPLE_RATE)
 
-            # راه‌اندازی استریم میکروفون و ترد پردازش
-            self.audio_stream = sd.RawInputStream(
+            self.audio_stream = self.sd.RawInputStream(
                 samplerate=SAMPLE_RATE,
-                blocksize=8000,
+                blocksize=4000,
                 dtype="int16",
                 channels=1,
                 callback=self._audio_callback
@@ -394,18 +793,28 @@ class SayToHandyWindowsApp:
             self.audio_stream.start()
 
             threading.Thread(target=self._worker_loop, daemon=True).start()
-            keyboard.add_hotkey(DEFAULT_HOTKEY, self.toggle_recording)
+            try:
+                self.keyboard_module.add_hotkey(DEFAULT_HOTKEY, self.toggle_recording)
+            except Exception:
+                pass
 
-            self.record_btn.config(state="normal")
-            self.status_var.set(
-                "✅ آماده به کار! در هر نرم‌افزار ویندوز کلید Ctrl+Shift+Space را بزنید و صحبت کنید."
-            )
+            self.record_btn.configure(state="normal")
+            self.status_var.set("✅ آماده به کار! کلید Ctrl+Shift+Space را در هر برنامه ویندوز بزنید.")
         except Exception as err:
-            self.status_var.set(f"❌ خطا در راه‌اندازی کارت صدا یا مدل: {err}")
+            LOG_FILE.write_text(traceback.format_exc(), encoding="utf-8")
+            self.status_var.set(f"❌ خطا در راه‌اندازی میکروفون: {err}")
 
     def _audio_callback(self, indata, frames, time_info, status):
         if self.is_recording:
-            self.audio_queue.put(bytes(indata))
+            raw_bytes = bytes(indata)
+            self.audio_queue.put(raw_bytes)
+            # محاسبه سطح بلندی صدا برای اکولایزر کپسول شناور Handy
+            try:
+                step = max(1, len(raw_bytes) // 32)
+                levels = [min(13, abs(raw_bytes[i] - 128) // 6 + 3) for i in range(0, min(len(raw_bytes), 32), 2)]
+                self.after(0, lambda lv=levels: self.overlay.update_waveform(lv, active=True))
+            except Exception:
+                pass
 
     def _worker_loop(self):
         while True:
@@ -417,6 +826,10 @@ class SayToHandyWindowsApp:
                 seg = res.get("text", "").strip()
                 if seg:
                     self._handle_recognized_segment(seg)
+            else:
+                partial = json.loads(self.recognizer.PartialResult()).get("partial", "").strip()
+                if partial:
+                    self.after(0, lambda p=partial: self.overlay.set_recording_state(True, p))
 
     def _handle_recognized_segment(self, raw_segment: str):
         self.session_segments.append(raw_segment)
@@ -428,15 +841,21 @@ class SayToHandyWindowsApp:
         if not processed:
             return
 
-        # نمایش در پنجره برنامه
-        self.root.after(0, lambda: self.text_box.insert(tk.END, processed + " "))
-
-        # تزریق مستقیم در پنجره فعال ویندوز (Word, Telegram, Browser...)
-        if self.auto_paste_var.get():
+        def update_ui():
+            self.text_box.insert("end", processed + " ")
             try:
-                pyperclip.copy(processed + " ")
+                self.text_box._textbox.tag_add("rtl", "1.0", "end")
+            except Exception:
+                pass
+            self.overlay.set_recording_state(self.is_recording, processed)
+
+        self.after(0, update_ui)
+
+        if self.auto_paste_var.get() and self.pyperclip_module and self.keyboard_module:
+            try:
+                self.pyperclip_module.copy(processed + " ")
                 time.sleep(0.05)
-                keyboard.send("ctrl+v")
+                self.keyboard_module.send("ctrl+v")
             except Exception:
                 pass
 
@@ -447,8 +866,9 @@ class SayToHandyWindowsApp:
             self.is_recording = True
             self.start_time = time.time()
             self.session_segments.clear()
-            self.record_btn.config(text="⏹️ توقف ضبط (در حال شنیدن...)", bg="#dc2626")
-            self.status_var.set("🎙️ در حال شنیدن صدای شما... صحبت کنید (برای توقف دوباره Ctrl+Shift+Space را بزنید)")
+            self.record_btn.configure(text="⏹ توقف ضبط", fg_color="#dc2626", hover_color="#b91c1c")
+            self.status_var.set("🎙️ در حال شنیدن صدای شما... صحبت کنید")
+            self.overlay.set_recording_state(True, "در حال شنیدن...")
         else:
             self.is_recording = False
             duration = time.time() - self.start_time
@@ -456,8 +876,9 @@ class SayToHandyWindowsApp:
             if final_res:
                 self._handle_recognized_segment(final_res)
 
-            self.record_btn.config(text="🎙️ شروع تایپ صوتی (Ctrl+Shift+Space)", bg="#16a34a")
-            self.status_var.set("✅ ضبط متوقف شد و متن در پنجره فعال تایپ گردید.")
+            self.record_btn.configure(text="🎙️ شروع تایپ صوتی", fg_color="#2563eb", hover_color="#1d4ed8")
+            self.status_var.set("✅ ضبط متوقف شد و متن تایپ گردید.")
+            self.overlay.set_recording_state(False)
 
             full_raw = " ".join(self.session_segments).strip()
             if full_raw:
@@ -470,10 +891,10 @@ class SayToHandyWindowsApp:
                     conn.commit()
 
     def copy_all_text(self):
-        content = self.text_box.get("1.0", tk.END).strip()
-        if content:
-            pyperclip.copy(content)
-            self.status_var.set("📋 کل متن داخل ویرایشگر در کلیپ‌بورد کپی شد.")
+        content = self.text_box.get("1.0", "end").strip()
+        if content and self.pyperclip_module:
+            self.pyperclip_module.copy(content)
+            self.status_var.set("📋 کل متن در کلیپ‌بورد کپی شد.")
 
     def export_history_csv(self):
         save_path = filedialog.asksaveasfilename(
@@ -485,77 +906,106 @@ class SayToHandyWindowsApp:
             return
         with sqlite3.connect(DB_PATH) as conn:
             rows = conn.execute("SELECT id, processed_text, raw_text, word_count, duration_sec, created_at FROM transcriptions ORDER BY id DESC").fetchall()
-
         with open(save_path, "w", encoding="utf-8-sig") as f:
             f.write("ID,Processed Text,Raw Vosk Text,Words,Duration (s),Date\\n")
             for r in rows:
                 f.write(f'{r[0]},"{r[1]}","{r[2]}",{r[3]},{r[4]},"{r[5]}"\\n')
-        messagebox.showinfo("ذخیره موفق", f"فایل اکسل تاریخچه با موفقیت در مسیر زیر ذخیره شد:\\n{save_path}")
+        messagebox.showinfo("ذخیره موفق", f"فایل اکسل با موفقیت ذخیره شد:\\n{save_path}")
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = SayToHandyWindowsApp(root)
-    root.mainloop()
+    try:
+        app = SayToHandyModernApp()
+        app.mainloop()
+    except Exception:
+        err_msg = traceback.format_exc()
+        try:
+            LOG_FILE.write_text(err_msg, encoding="utf-8")
+            ctypes.windll.user32.MessageBoxW(0, f"Fatal Error:\\n{err_msg}", "SayToHandy Error", 0x10)
+        except Exception:
+            pass
 `
   },
   {
     id: 'build-exe-bat',
     filename: 'build_exe.bat',
-    title: 'اسکریپت ساخت خودکار فایل اجرایی تک‌فایلی (SayToHandy.exe)',
+    title: 'اسکریپت ساخت خودکار فایل اجرایی تک‌فایلی مدرن (SayToHandy.exe)',
     badge: 'EXE Compiler Script',
     description:
-      'با اجرای این اسکریپت روی ویندوز، PyInstaller تمام کتابخانه‌ها و فایل‌های DLL موتور صوتی Vosk را داخل یک فایل مستقل به نام SayToHandy.exe در پوشه dist بسته‌بندی می‌کند تا هر کاربری بدون نیاز به نصب پایتون بتواند آن را اجرا کند.',
+      'با اجرای این اسکریپت روی ویندوز، PyInstaller رابط گرافیکی مدرن CustomTkinter به همراه تمام فایل‌های DLL موتور صوتی Vosk و PortAudio را داخل فایل مستقل dist\\SayToHandy.exe بسته‌بندی کرده و بلافاصله آن را اجرا می‌کند.',
     code: `@echo off
-chcp 65001 > nul
-title SayTo-Handy Windows EXE Compiler (PyInstaller)
+cd /d "%~dp0"
+title SayTo-Handy Modern UI Windows EXE Compiler (PyInstaller + CustomTkinter)
 
 echo ====================================================================
-echo   ساخت فایل اجرایی مستقل ویندوز (SayToHandy.exe)
-echo   شامل باندل کامل موتور صوتی Vosk + رابط گرافیکی دانلود خودکار مدل
+echo   SayTo-Handy Modern UI (Handy Clone) - Windows EXE Builder
+echo   UI: CustomTkinter + Floating Pill Overlay - Engine: Vosk FA 0.42
 echo ====================================================================
 echo.
 
-:: 1. بررسی پایتون در سیستم سازنده
-python --version > nul 2>&1
-if %errorlevel% neq 0 (
-    echo [خطا] برای کامپایل اولیه به فایل EXE، باید پایتون روی سیستم شما نصب باشد.
+:: 1. Detect Python command (python or py)
+set PY_CMD=
+python --version >nul 2>&1
+if not errorlevel 1 (
+    set PY_CMD=python
+) else (
+    py --version >nul 2>&1
+    if not errorlevel 1 (
+        set PY_CMD=py
+    )
+)
+
+if "%PY_CMD%"=="" (
+    echo [ERROR] Python was not found on your Windows PC!
+    echo Please install Python 3.10+ from https://www.python.org/downloads/
     pause
     exit /b 1
 )
 
-:: 2. نصب PyInstaller و کتابخانه‌های مورد نیاز
-echo [۱/۳] در حال نصب PyInstaller و وابستگی‌های صوتی...
-pip install --upgrade pip
-pip install pyinstaller vosk sounddevice keyboard pyperclip
-
-:: 3. کامپایل به فایل تک‌فایلی EXE بدون پنجره سیاه کنسول (--noconsole --onefile)
-:: نکته بسیار مهم: فلگ --collect-all vosk و --collect-all sounddevice تمام DLLهای C++ را داخل EXE قرار می‌دهد
+echo [OK] Found Python launcher: %PY_CMD%
+%PY_CMD% --version
 echo.
-echo [۲/۳] در حال کامپایل و بسته‌بندی SayToHandy.exe (حدود ۱ دقیقه زمان می‌برد)...
-pyinstaller --noconfirm --onefile --windowed ^
-    --name "SayToHandy" ^
-    --collect-all vosk ^
-    --collect-all sounddevice ^
-    --hidden-import keyboard ^
-    --hidden-import pyperclip ^
-    sayto_handy_gui_app.py
+
+:: 2. Verify sayto_handy_gui_app.py exists
+if not exist "sayto_handy_gui_app.py" (
+    echo [ERROR] File "sayto_handy_gui_app.py" not found in %CD%
+    pause
+    exit /b 1
+)
+
+:: 3. Install CustomTkinter, PyInstaller and Audio Libraries
+echo [Step 1/3] Installing CustomTkinter (Modern UI), PyInstaller, Vosk, SoundDevice...
+%PY_CMD% -m pip install --upgrade pip
+%PY_CMD% -m pip install customtkinter pyinstaller vosk sounddevice cffi keyboard pyperclip
+if errorlevel 1 (
+    echo [ERROR] Failed to install packages via pip.
+    pause
+    exit /b 1
+)
+
+:: 4. Clean old build cache
+if exist "build" rmdir /s /q "build"
+if exist "dist\\SayToHandy.exe" del /f /q "dist\\SayToHandy.exe"
+
+:: 5. Compile single-file Windows executable with CustomTkinter assets bundled
+echo.
+echo [Step 2/3] Compiling Modern Handy UI into dist\\SayToHandy.exe ...
+%PY_CMD% -m PyInstaller --noconfirm --clean --onefile --name "SayToHandy" --collect-all customtkinter --collect-all vosk --collect-all _sounddevice_data --hidden-import sounddevice --hidden-import _cffi_backend --hidden-import cffi --hidden-import keyboard --hidden-import pyperclip sayto_handy_gui_app.py
 
 echo.
 if exist "dist\\SayToHandy.exe" (
     echo ====================================================================
-    echo   ✅ تبریک! فایل اجرایی مستقل با موفقیت ساخته شد:
-    echo   مسیر فایل:  dist\\SayToHandy.exe
+    echo   [SUCCESS] Modern SayToHandy.exe created successfully!
+    echo   File Location:  %CD%\\dist\\SayToHandy.exe
     echo.
-    echo   اکنون می‌توانید فقط همین فایل SayToHandy.exe را به هر کامپیوتر
-    echo   ویندوزی دیگری منتقل کنید. کاربر با باز کردن آن، فقط دکمه
-    echo   «دانلود خودکار مدل» را می‌زند و بلافاصله تایپ صوتی را شروع می‌کند!
+    echo   Launching Modern SayToHandy.exe now...
     echo ====================================================================
-    explorer dist
+    start "" "dist\\SayToHandy.exe"
 ) else (
-    echo [خطا] مشکلی در فرآیند ساخت EXE رخ داد.
+    echo [ERROR] SayToHandy.exe was not generated. Check errors above.
 )
 
+echo.
 pause
 `
   },
@@ -886,7 +1336,8 @@ build_exe.bat
   }
 ];
 
-export const REQUIREMENTS_TXT = `vosk==0.3.45
+export const REQUIREMENTS_TXT = `customtkinter==5.2.2
+vosk==0.3.45
 sounddevice==0.5.1
 keyboard==0.13.5
 pyperclip==1.9.0

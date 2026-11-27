@@ -395,9 +395,13 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // دانلود فایل پایتون انتخاب‌شده
+  // دانلود فایل پایتون یا اسکریپت ویندوز (با تبدیل خودکار CRLF برای فایل‌های .bat)
   const handleDownloadPythonFile = (filename: string, content: string) => {
-    const blob = new Blob([content], { type: 'text/x-python;charset=utf-8;' });
+    const isWindowsBatch = filename.endsWith('.bat') || filename.endsWith('.iss');
+    const normalizedContent = isWindowsBatch
+      ? content.replace(/\r?\n/g, '\r\n')
+      : content;
+    const blob = new Blob([normalizedContent], { type: 'text/plain;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -1149,38 +1153,72 @@ export default function App() {
                   </div>
                   <button
                     onClick={() => {
-                      const guiApp = PYTHON_PROJECT_FILES.find((f) => f.id === 'windows-gui-exe-app')?.code || '';
-                      const buildBat = PYTHON_PROJECT_FILES.find((f) => f.id === 'build-exe-bat')?.code || '';
-                      // اسکریپت خودکار که با یک کلیک در ویندوز هم فایل پایتون را می‌سازد و هم به EXE تبدیل می‌کند
-                      const allInOneInstallerCmd = `@echo off
-chcp 65001 > nul
-title SayToHandy EXE Auto-Builder
-echo در حال آماده‌سازی فایل‌های سورس و کامپایل به SayToHandy.exe ...
+                      const guiApp =
+                        PYTHON_PROJECT_FILES.find((f) => f.id === 'windows-gui-exe-app')?.code || '';
+                      const buildBat =
+                        PYTHON_PROJECT_FILES.find((f) => f.id === 'build-exe-bat')?.code || '';
+                      // Split Base64 into 64-character chunks so Windows CMD never hits the 8191-char line limit!
+                      const b64Payload = window.btoa(unescape(encodeURIComponent(guiApp)));
+                      const chunks = b64Payload.match(/.{1,64}/g) || [];
+                      const echoLines = chunks
+                        .map((chunk, idx) =>
+                          idx === 0
+                            ? `> "sayto_handy_gui_app.b64" echo ${chunk}`
+                            : `>> "sayto_handy_gui_app.b64" echo ${chunk}`
+                        )
+                        .join('\n');
 
-python -c "import pathlib; pathlib.Path('sayto_handy_gui_app.py').write_text(${JSON.stringify(guiApp)}, encoding='utf-8')"
+                      const safeAllInOneBat = `@echo off
+cd /d "%~dp0"
+title SayTo-Handy All-In-One EXE Builder
+
+echo ====================================================================
+echo   SayTo-Handy All-In-One Windows EXE Builder
+echo ====================================================================
+echo.
+
+echo [Step 0] Extracting complete sayto_handy_gui_app.py (multi-line safe)...
+if exist "sayto_handy_gui_app.b64" del /f /q "sayto_handy_gui_app.b64"
+if exist "sayto_handy_gui_app.py" del /f /q "sayto_handy_gui_app.py"
+${echoLines}
+certutil -decode -f "sayto_handy_gui_app.b64" "sayto_handy_gui_app.py" >nul 2>&1
+del /q "sayto_handy_gui_app.b64" >nul 2>&1
 
 ${buildBat}`;
-                      handleDownloadPythonFile('Make_SayToHandy_EXE.bat', allInOneInstallerCmd);
+                      handleDownloadPythonFile('Make_SayToHandy_EXE.bat', safeAllInOneBat);
                     }}
                     className="px-4 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <Download className="w-4 h-4" />
-                    <span>دانلود سازنده تک‌کلیکی فایل EXE (Make_SayToHandy_EXE.bat)</span>
+                    <span>دانلود سازنده تک‌کلیکی اصلاح‌شده (Make_SayToHandy_EXE.bat)</span>
                   </button>
+                </div>
+
+                {/* Troubleshooting Box for Windows Users */}
+                <div className="p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-slate-800 dark:text-slate-200 space-y-1.5">
+                  <div className="font-bold text-amber-700 dark:text-amber-400">
+                    💡 چرا فایل ۷۱ مگابایتی <span className="font-mono">SayToHandy.exe</span> بعد از یک لحظه بسته شد؟ (رفع قطعی باگ DLL موتور Vosk در PyInstaller)
+                  </div>
+                  <p className="text-xs leading-relaxed">
+                    وقتی PyInstaller فایل ۷۱ مگابایتی را به صورت تک‌فایلی (<code className="font-mono">--onefile</code>) می‌سازد، هنگام اجرا فایل‌های <code className="font-mono">libvosk.dll</code> و <code className="font-mono">_cffi_backend</code> را در پوشه موقت ویندوز (<code className="font-mono">_MEIPASS\vosk</code>) باز می‌کند اما ویندوز مسیر آن زیرپوشه را پیدا نمی‌کرد و به دلیل فلگ <code className="font-mono">--windowed</code> بدون نمایش خطا بسته می‌شد. اکنون **لودر مستقیم مسیر DLLهای <code className="font-mono">os.add_dll_directory(sys._MEIPASS + &apos;\vosk&apos;)</code> و ماژول <code className="font-mono">_cffi_backend</code>** به ابتدای کد اضافه شد تا پنجره گرافیکی در ۱۰۰٪ مواقع باز بماند.
+                  </p>
+                  <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                    کافی است یک بار دیگر روی دکمه سبز بالا («دانلود سازنده تک‌کلیکی اصلاح‌شده Make_SayToHandy_EXE.bat») کلیک کرده و آن را اجرا کنید؛ در پایان ساخت، خود اسکریپت برنامه SayToHandy.exe را برای شما باز می‌کند!
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
                   <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
                     <div className="font-bold text-slate-900 dark:text-white mb-1">
-                      گام ۱: ساخت فایل SayToHandy.exe
+                      گام ۱: اجرای build_exe.bat یا سازنده تک‌کلیکی
                     </div>
-                    فایل <code className="font-mono text-emerald-600 dark:text-emerald-400">Make_SayToHandy_EXE.bat</code> را از دکمه سبز بالا دانلود و اجرا کنید تا فایل مستقل <code className="font-mono">dist\SayToHandy.exe</code> به صورت خودکار ساخته شود.
+                    فایل جدید <code className="font-mono text-emerald-600 dark:text-emerald-400">Make_SayToHandy_EXE.bat</code> (یا فایل <code className="font-mono">build_exe.bat</code> در کنار <code className="font-mono">sayto_handy_gui_app.py</code>) را اجرا کنید تا پنجره CMD باز بماند و مراحل ساخت <code className="font-mono">dist\SayToHandy.exe</code> را نشان دهد.
                   </div>
                   <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
                     <div className="font-bold text-slate-900 dark:text-white mb-1">
                       گام ۲: نصب روی هر ویندوزی
                     </div>
-                    فایل <code className="font-mono">SayToHandy.exe</code> را به هر کامپیوتر دیگری بدهید؛ کاربر بدون نیاز به نصب پایتون یا هیچ پیش‌نیازی آن را باز می‌کند.
+                    فایل <code className="font-mono">dist\SayToHandy.exe</code> تولیدشده را به هر کامپیوتر دیگری بدهید؛ کاربر بدون نیاز به نصب پایتون آن را باز می‌کند.
                   </div>
                   <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
                     <div className="font-bold text-slate-900 dark:text-white mb-1">
